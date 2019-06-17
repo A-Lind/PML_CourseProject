@@ -1,0 +1,113 @@
+---
+title: "PML_CourseProject"
+author: "A-Lind"
+date: "17 6 2019"
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Course Project in the Coursera Course Practical Machine Learning
+
+The goal of this project is to predict the manner in which the participants in the study did the exercise (on a rating from A-E). 
+This involves describing how the final model was built; how cross-validation was used; what I expected the out of sample error to be and why I made the choices I did.
+
+The chunk below loads the required packages and the training dataset. 
+Note that all na-characters in the dataset are imported as `NA` with the `na =`-command. 
+
+```{r load, message=FALSE}
+rm(list = ls())
+library(tidyverse); library(caret); library(magrittr); library(parallel); library(doParallel)
+training <- read_csv("Datasets/pml-training.csv", na = c("", "-", "NA", "#DIV/0!", "<NA>"))
+```
+
+First of all, the dataset requires some cleaning. There are a lot of variables with no values and only NA's. I remove all variables with more than 95 % missing observations. After this, there are three missing values which I replace with the median values (not the mean as there are outliers in the data) of the same variables.
+
+```{r cleanup}
+# remove all features with more than 95 pct. of observations missing - leaves us with 59 features
+training <- training[, -c(which(apply(training, 2, function(x) sum(is.na(x))) > 19000))] 
+
+# three missing values - magnet_forearm_y and z AND magnet_dumbbell_z
+which(apply(training, 2, function(x) sum(is.na(x))) > 0)
+
+# replace the missing values with the median values for that variable (imputation)
+training[is.na(training$magnet_forearm_y), "magnet_forearm_y"] <- median(training$magnet_forearm_y, na.rm=T)
+training[is.na(training$magnet_forearm_z), "magnet_forearm_z"] <- median(training$magnet_forearm_z, na.rm=T)
+training[is.na(training$magnet_dumbbell_z), "magnet_dumbbell_z"] <- median(training$magnet_dumbbell_z, na.rm=T)
+```
+
+I also remove all the variables related to the user and the date/time, as this should not be used in a classification model. One could expect that the name of the user would be a good predictor but this wouldn't help the model predict out of sample. 
+
+```{r remove vars}
+# remove unimportant variables such as user data and time stamps
+# these variables don't apply to unknow data and are thus irrelevant for a prediction model
+training$user_name <- NULL
+training$raw_timestamp_part_1 <- NULL
+training$raw_timestamp_part_2 <- NULL
+training$cvtd_timestamp <- NULL
+training$new_window <- NULL
+training$num_window <- NULL
+```
+
+Furthermore, one observation has extreme values on `gyros_dumbbell_x`and `gyros_dumbbell_z`that seem to be errors in the dataset. 
+I remove this observation so it doesn't interfere with the model.
+
+```{r outlier observation}
+# preprocessing
+# don't print here: summary(training)
+
+# extreme values in _gyros_?
+max(training$gyros_dumbbell_x); min(training$gyros_dumbbell_x)
+max(training$gyros_dumbbell_z); min(training$gyros_dumbbell_z)
+# don't print here: training %>% filter(gyros_dumbbell_x < -10) %>% as.data.frame()
+
+# removing this observation - seems like an outlier / or a faulty measurement
+training <- training[!training$X1 == 5373, ] 
+```
+
+I decided to build the model as a random forest (`method = "rf"` in the `caret`-package). I use cross-validation (7-folds) to avoid overfitting the model. I also use the `parallel`-package to speed up the estimation of the model. 
+
+```{r rf-model with cv7}
+# RF with cross-validation
+train_control <- trainControl('cv', 7)
+
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+
+fit1.1 <- caret::train(classe ~., data = training[-1], method = "rf", trControl = train_control) # 53 predictors
+fit1.1 
+# don't print here: Sys.time()
+stopCluster(cl)
+```
+
+As the accuracy in the initial model is higher than 99 pct. there seems to be no reason to develop the model any further. 
+As I have used cross-validation, I also expect the out-of-sample error to be fairly low. 
+
+```{r test}
+# classifying the test-data using rf-model
+testdata <- read_csv("Datasets/pml-testing.csv", na = c("", "-", "NA", "#DIV/0!", "<NA>"))
+
+# same set of predictors as in training
+testdata <- testdata[, intersect(names(testdata), names(training))]
+
+# check for any NA's
+sum(is.na(testdata))
+
+# predict
+testdata_predicted <- predict(fit1.1, newdata = testdata)
+
+testdata$predicted_classe <- as.character(testdata_predicted)
+
+# Test classification
+test_fit <- data.frame(true_val = training$classe, predicted_val = predict(fit1.1), stringsAsFactors = F)
+test_fit %<>%
+  mutate(correct = as.numeric(true_val == predicted_val)) # 100 %
+
+# for the quiz
+testdata %>% select(X1, predicted_classe)
+
+```
